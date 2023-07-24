@@ -1,0 +1,122 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+  DataSyncAgentSize:
+    Type: String
+    Default: m5.2xlarge
+  SSHKeyName:
+    Type: String
+
+Metadata: 
+  AWS::CloudFormation::Interface: 
+    ParameterGroups: 
+      - Label:
+          default: "Network Configuration"
+        Parameters: 
+          - VpcId
+          - SubnetId
+      - Label:
+          default: "DataSync Agent EC2 Instance"
+        Parameters: 
+          - DataSyncAgentSize
+          - SSHKeyName
+
+Conditions:
+  HasSSHKey:
+    !Not [ !Equals [ !Ref SSHKeyName, '' ] ]
+
+Resources:
+  DataSyncAgentEC2Instance: 
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref DataSyncAgentSize
+      ImageId: !Sub '{{resolve:ssm:/aws/service/datasync/ami}}'
+      KeyName:
+        Fn::If:
+        - HasSSHKey
+        - !Ref SSHKeyName
+        - !Ref AWS::NoValue
+      NetworkInterfaces:
+        - GroupSet:
+            - !Ref DataSyncAgentSecurityGroup
+          AssociatePublicIpAddress: 'true'
+          DeviceIndex: '0'
+          DeleteOnTermination: 'true'
+          SubnetId: !Ref SubnetId
+      Tags:
+        - Key: Name 
+          Value: datasync-agent
+
+  DataSyncAgentSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: DataSyncAgentSG
+      GroupDescription: Security group for DataSync agent EC2 instance
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: '0.0.0.0/0'
+          Description: HTTP access for agent activation
+      Tags:
+        - Key: Name 
+          Value: DataSyncAgentSG
+
+  DataSyncVpcEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      PrivateDnsEnabled: 'true'
+      SecurityGroupIds: 
+        - !Ref DataSyncServiceSecurityGroup
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.datasync'
+      SubnetIds: 
+        - !Ref SubnetId
+      VpcEndpointType: 'Interface'
+      VpcId: !Ref VpcId
+
+  DataSyncServiceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: DataSyncServiceSG
+      GroupDescription: Security group for DataSync VPC endpoint and task ENIs
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 1024
+          ToPort: 1064
+          SourceSecurityGroupId: !GetAtt DataSyncAgentSecurityGroup.GroupId
+          Description: Ingress from DataSync agent
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          SourceSecurityGroupId: !GetAtt DataSyncAgentSecurityGroup.GroupId
+          Description: Ingress from DataSync agent
+      Tags:
+        - Key: Name 
+          Value: DataSyncServiceSG
+
+  DataSyncNfsServerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: DataSyncNfsServerSG
+      GroupDescription: Security group for DataSync NFS server
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 2049
+          ToPort: 2049
+          SourceSecurityGroupId: !GetAtt DataSyncAgentSecurityGroup.GroupId
+          Description: Ingress from DataSync agent
+        - IpProtocol: udp
+          FromPort: 2049
+          ToPort: 2049
+          SourceSecurityGroupId: !GetAtt DataSyncAgentSecurityGroup.GroupId
+          Description: Ingress from DataSync agent
+      Tags:
+        - Key: Name 
+          Value: DataSyncNfsServerSG
